@@ -1,6 +1,23 @@
 import io
 import os
 from datetime import datetime
+
+# 自動檢查並安裝雲端缺少的套件
+import subprocess
+import sys
+
+
+def install_package(package):
+  try:
+    __import__(package)
+  except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+
+install_package("docx")
+install_package("PIL")
+install_package("streamlit")
+
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
