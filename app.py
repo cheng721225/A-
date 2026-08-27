@@ -6,7 +6,9 @@ from datetime import datetime
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Inches, Pt
+from docx.shared import Inches, Pt, RGBColor
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
@@ -31,6 +33,26 @@ def load_db():
 def save_db(data):
     with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+# Word 表格輔助函數：設定儲存格背景色
+def set_cell_background(cell, fill_color):
+    tcPr = cell._tc.get_or_add_tcPr()
+    shd = OxmlElement('w:shd')
+    shd.set(qn('w:val'), 'clear')
+    shd.set(qn('w:color'), 'auto')
+    shd.set(qn('w:fill'), fill_color)
+    tcPr.append(shd)
+
+# Word 表格輔助函數：設定儲存格邊框
+def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcMar = OxmlElement('w:tcMar')
+    for m, val in [('top', top), ('bottom', bottom), ('left', left), ('right', right)]:
+        node = OxmlElement(f'w:{m}')
+        node.set(qn('w:w'), str(val))
+        node.set(qn('w:type'), 'dxa')
+        tcMar.append(node)
+    tcPr.append(tcMar)
 
 st.set_page_config(
     page_title="建築工地互動式缺失查驗系統", page_icon="🏗️", layout="wide"
@@ -226,7 +248,7 @@ if "submitted_form" in locals() and submitted_form:
     # 1. 寫入本地資料庫永久保存
     save_db(st.session_state.project_data)
 
-    # 2. 開始生成 Word 報告
+    # 2. 開始生成專業高質感 Word 報告
     doc = Document()
     for section in doc.sections:
         section.top_margin = Inches(1)
@@ -234,156 +256,268 @@ if "submitted_form" in locals() and submitted_form:
         section.left_margin = Inches(1)
         section.right_margin = Inches(1)
 
+    # 主標題
     title_p = doc.add_paragraph()
     title_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     title_run = title_p.add_run(f"【{project_info['project_name']}】室內缺失查驗紀錄表")
     title_run.bold = True
-    title_run.font.size = Pt(18)
+    title_run.font.size = Pt(16)
+    title_run.font.color.rgb = RGBColor(44, 62, 80) # 專業深鐵灰
+    title_p.paragraph_format.space_after = Pt(12)
 
+    # 專案資訊看板 (Meta Table)
     meta_table = doc.add_table(rows=2, cols=4)
     meta_table.alignment = WD_TABLE_ALIGNMENT.CENTER
     meta_data = [
         ("工程名稱", project_info["project_name"], "查驗日期", datetime.today().strftime("%Y年%m月%d日")),
         ("施作位置", project_info["location"], "查驗人員 / 主管", f"{project_info['inspector']} / {project_info['supervisor']}"),
     ]
+    
+    meta_col_widths = [Inches(1.2), Inches(2.3), Inches(1.2), Inches(2.3)]
     for r_idx, row_content in enumerate(meta_data):
         for c_idx, text_val in enumerate(row_content):
-            meta_table.cell(r_idx, c_idx).text = str(text_val)
+            cell = meta_table.cell(r_idx, c_idx)
+            cell.text = str(text_val)
+            cell.width = meta_col_widths[c_idx]
+            set_cell_margins(cell, top=120, bottom=120, left=150, right=150)
+            set_cell_background(cell, "F8F9F9" if r_idx % 2 == 0 else "F2F4F4")
+            
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+            for run in p.runs:
+                run.font.size = Pt(10)
+                run.font.name = "Arial"
+                if c_idx % 2 == 0:
+                    run.font.bold = True
+                    run.font.color.rgb = RGBColor(85, 85, 85)
+                else:
+                    run.font.color.rgb = RGBColor(34, 34, 34)
 
-    doc.add_paragraph()
+    doc.add_paragraph().paragraph_format.space_after = Pt(8)
 
+    # 一、 平面圖區塊
     if os.path.exists(plan_filename):
-        doc.add_paragraph(f"一、 戶別平面圖與標註位置 ({project_info['location']})").runs[0].bold = True
+        h1_p = doc.add_paragraph()
+        h1_run = h1_p.add_run(f"一、 戶別平面圖與標註位置 ({project_info['location']})")
+        h1_run.bold = True
+        h1_run.font.size = Pt(13)
+        h1_run.font.color.rgb = RGBColor(52, 73, 94)
+        h1_p.paragraph_format.space_before = Pt(10)
+        h1_p.paragraph_format.space_after = Pt(6)
+
+        img_p = doc.add_paragraph()
+        img_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         img_byte_arr = io.BytesIO()
         draw_img.save(img_byte_arr, format="JPEG")
         img_byte_arr.seek(0)
-        doc.add_picture(img_byte_arr, width=Inches(5.0))
-        doc.add_paragraph()
+        img_p.add_run().add_picture(img_byte_arr, width=Inches(4.8))
+        doc.add_paragraph().paragraph_format.space_after = Pt(8)
 
-    doc.add_paragraph("二、 缺失查驗明細表").runs[0].bold = True
+    # 二、 缺失查驗明細表區塊
+    h2_p = doc.add_paragraph()
+    h2_run = h2_p.add_run("二、 缺失查驗明細表")
+    h2_run.bold = True
+    h2_run.font.size = Pt(13)
+    h2_run.font.color.rgb = RGBColor(52, 73, 94)
+    h2_p.paragraph_format.space_before = Pt(10)
+    h2_p.paragraph_format.space_after = Pt(6)
+
     table = doc.add_table(rows=1, cols=6)
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
     headers = ["編號", "缺失位置", "缺失內容", "缺失廠商", "現場照片", "備註"]
+    col_widths = [Inches(0.6), Inches(1.1), Inches(2.0), Inches(1.1), Inches(1.5), Inches(1.2)]
+    
     hdr_cells = table.rows[0].cells
     for i, header_text in enumerate(headers):
         hdr_cells[i].text = header_text
-        hdr_cells[i].paragraphs[0].runs[0].bold = True
+        hdr_cells[i].width = col_widths[i]
+        set_cell_background(hdr_cells[i], "2C3E50") # 深鐵灰表頭
+        set_cell_margins(hdr_cells[i], top=140, bottom=140, left=100, right=100)
+        
+        p = hdr_cells[i].paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        for run in p.runs:
+            run.bold = True
+            run.font.size = Pt(10)
+            run.font.name = "Arial"
+            run.font.color.rgb = RGBColor(255, 255, 255)
 
-    for m in current_markers:
+    for idx, m in enumerate(current_markers):
         m_id = str(m["id"])
         detail = current_details.get(m_id, {})
         row_cells = table.add_row().cells
 
-        row_cells[0].text = f"#{m_id}"
-        row_cells[1].text = detail.get("space", "")
-        row_cells[2].text = detail.get("content", "")
-        row_cells[3].text = detail.get("vendor", "")
+        row_values = [
+            f"#{m_id}",
+            detail.get("space", ""),
+            detail.get("content", ""),
+            detail.get("vendor", ""),
+            "", # 照片後續放入
+            detail.get("remark", "")
+        ]
 
+        for i, val in enumerate(row_values):
+            row_cells[i].text = val
+            row_cells[i].width = col_widths[i]
+            set_cell_margins(row_cells[i], top=100, bottom=100, left=100, right=100)
+            if idx % 2 == 1:
+                set_cell_background(row_cells[i], "F9F9F9") # 斑馬紋
+
+            p = row_cells[i].paragraphs[0]
+            if i in [0]:
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            else:
+                p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                
+            for run in p.runs:
+                run.font.size = Pt(9.5)
+                run.font.name = "Arial"
+                run.font.color.rgb = RGBColor(51, 51, 51)
+
+        # 放入現場照片
         photo_b64 = detail.get("photo_b64")
         if photo_b64:
-            photo_para = row_cells[4].paragraphs[0]
-            photo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            run = photo_para.add_run()
-            img_bytes = base64.b64decode(photo_b64)
-            run.add_picture(io.BytesIO(img_bytes), width=Inches(1.2))
-            row_cells[4].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            try:
+                photo_para = row_cells[4].paragraphs[0]
+                photo_para.text = "" # 清空文字
+                photo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                run = photo_para.add_run()
+                img_bytes = base64.b64decode(photo_b64)
+                run.add_picture(io.BytesIO(img_bytes), width=Inches(1.2))
+                row_cells[4].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+            except:
+                row_cells[4].text = "載入失敗"
+                row_cells[4].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
         else:
             row_cells[4].text = "無照片"
-
-        row_cells[5].text = detail.get("remark", "")
+            row_cells[4].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
 
     word_io = io.BytesIO()
     doc.save(word_io)
     word_io.seek(0)
 
-    # 3. 開始生成 Excel 報告 (完整對應 Word 格式：包含標題、平面圖、與明細表圖片)
+    # 3. 開始生成專業高質感 Excel 報表
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "缺失查驗明細表"
+    ws.views.sheetView[0].showGridLines = True
 
-    # 設定標題資訊
+    font_title = Font(name="Arial", size=16, bold=True, color="2C3E50")
+    font_section = Font(name="Arial", size=13, bold=True, color="34495E")
+    font_meta_val = Font(name="Arial", size=10, color="222222")
+    font_header = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    font_body = Font(name="Arial", size=10, color="333333")
+
+    fill_header = PatternFill(start_color="2C3E50", end_color="2C3E50", fill_type="solid")
+    fill_meta = PatternFill(start_color="F8F9F9", end_color="F8F9F9", fill_type="solid")
+    fill_zebra = PatternFill(start_color="F2F4F4", end_color="F2F4F4", fill_type="solid")
+
+    border_thin = Border(
+        left=Side(style='thin', color='D5D8DC'), right=Side(style='thin', color='D5D8DC'),
+        top=Side(style='thin', color='D5D8DC'), bottom=Side(style='thin', color='D5D8DC')
+    )
+    border_meta = Border(
+        left=Side(style='thin', color='ABB2B9'), right=Side(style='thin', color='ABB2B9'),
+        top=Side(style='thin', color='ABB2B9'), bottom=Side(style='thin', color='ABB2B9')
+    )
+
+    align_center = Alignment(horizontal='center', vertical='center')
+    align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
     ws.append([f"【{project_info['project_name']}】室內缺失查驗紀錄表"])
-    ws.append([f"施作位置: {project_info['location']}", "", f"查驗日期: {datetime.today().strftime('%Y年%m月%d日')}", f"查驗人員 / 主管: {project_info['inspector']} / {project_info['supervisor']}"])
-    ws.append([]) # 空一行
+    ws.cell(row=1, column=1).font = font_title
+    ws.row_dimensions[1].height = 30
+    
+    ws.append([f"工程名稱: {project_info['project_name']}", "", f"查驗日期: {datetime.today().strftime('%Y年%m月%d日')}"])
+    ws.append([f"施作位置: {project_info['location']}", "", f"查驗人員 / 主管: {project_info['inspector']} / {project_info['supervisor']}"])
+    
+    ws.row_dimensions[2].height = 20
+    ws.row_dimensions[3].height = 20
 
-    # 一、 平面圖區塊標題
+    for r in [2, 3]:
+        for c in range(1, 7):
+            cell = ws.cell(row=r, column=c)
+            cell.fill = fill_meta
+            cell.border = border_meta
+            cell.font = font_meta_val
+
+    ws.append([])
+    ws.row_dimensions[4].height = 15
+
     ws.append([f"一、 戶別平面圖與標註位置 ({project_info['location']})"])
-    ws.append([]) # 預留給平面圖的空白行
+    ws.cell(row=5, column=1).font = font_section
+    ws.row_dimensions[5].height = 25
+    ws.append([])
 
-    # 將帶有紅點的平面圖直接貼進 Excel 中
     if os.path.exists(plan_filename):
         plan_img_io = io.BytesIO()
         draw_img.save(plan_img_io, format="JPEG")
         plan_img_io.seek(0)
         
         excel_plan_img = OpenpyxlImage(plan_img_io)
-        excel_plan_img.width = 350  # 調整 Excel 中的平面圖寬度
-        excel_plan_img.height = int(350 * (draw_img.height / draw_img.width))
-        ws.add_image(excel_plan_img, "A6") # 放置在 A6 儲存格
+        excel_plan_img.width = 380  
+        excel_plan_img.height = int(380 * (draw_img.height / draw_img.width))
+        ws.add_image(excel_plan_img, "A7") 
 
-    # 往下推幾行以容納平面圖空間
-    for _ in range(15):
+    for _ in range(16):
         ws.append([])
 
-    # 二、 缺失查驗明細表標題
+    sec_row = ws.max_row + 1
     ws.append(["二、 缺失查驗明細表"])
-    
+    ws.cell(row=sec_row, column=1).font = font_section
+    ws.row_dimensions[sec_row].height = 25
+
     excel_headers = ["編號", "缺失位置", "缺失內容", "缺失廠商", "現場照片", "備註"]
     ws.append(excel_headers)
-    
     table_header_row_idx = ws.max_row
+    ws.row_dimensions[table_header_row_idx].height = 26
 
-    # 填入 Excel 明細內容
-    for m in current_markers:
-        m_id = str(m["id"])
-        detail = current_details.get(m_id, {})
-        ws.append([
-            f"#{m_id}",
-            detail.get("space", ""),
-            detail.get("content", ""),
-            detail.get("vendor", ""),
-            "", # 照片欄位留白，後續用圖片覆蓋
-            detail.get("remark", "")
-        ])
-
-    # 設定 Excel 專業外觀樣式
-    header_fill = PatternFill(start_color="333333", end_color="333333", fill_type="solid")
-    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
-    thin_border = Border(
-        left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
-        top=Side(style='thin', color='CCCCCC'), bottom=Side(style='thin', color='CCCCCC')
-    )
-    align_center = Alignment(horizontal='center', vertical='center')
-    align_left = Alignment(horizontal='left', vertical='center')
-
-    # 套用樣式到明細表頭
     for col_num in range(1, 7):
         cell = ws.cell(row=table_header_row_idx, column=col_num)
-        cell.fill = header_fill
-        cell.font = header_font
+        cell.fill = fill_header
+        cell.font = font_header
         cell.alignment = align_center
-        cell.border = thin_border
+        cell.border = border_thin
 
-    # 設定欄寬與行高，並將現場照片實際貼入儲存格
-    ws.column_dimensions['E'].width = 18 # 現場照片欄位拉寬
+    ws.column_dimensions['A'].width = 10
+    ws.column_dimensions['B'].width = 16
+    ws.column_dimensions['C'].width = 32
+    ws.column_dimensions['D'].width = 16
+    ws.column_dimensions['E'].width = 18
+    ws.column_dimensions['F'].width = 32
+
     start_row_for_details = table_header_row_idx + 1
 
     for idx, m in enumerate(current_markers):
         current_row = start_row_for_details + idx
-        ws.row_dimensions[current_row].height = 70 # 拉高行高以容納圖片
+        ws.row_dimensions[current_row].height = 80
 
-        for col_num in range(1, 7):
-            cell = ws.cell(row=current_row, column=col_num)
-            cell.border = thin_border
-            if col_num in [1]: 
+        m_id = str(m["id"])
+        detail = current_details.get(m_id, {})
+        
+        row_values = [
+            f"#{m_id}",
+            detail.get("space", ""),
+            detail.get("content", ""),
+            detail.get("vendor", ""),
+            "",
+            detail.get("remark", "")
+        ]
+        
+        for col_num, val in enumerate(row_values, 1):
+            cell = ws.cell(row=current_row, column=col_num, value=val)
+            cell.font = font_body
+            cell.border = border_thin
+            
+            if idx % 2 == 1:
+                cell.fill = fill_zebra
+
+            if col_num in [1, 5]:
                 cell.alignment = align_center
             else:
                 cell.alignment = align_left
 
-        # 將該筆缺失的照片縮圖貼入 E 欄 (第 5 欄)
-        m_id = str(m["id"])
-        detail = current_details.get(m_id, {})
         photo_b64 = detail.get("photo_b64")
         if photo_b64:
             try:
@@ -391,24 +525,21 @@ if "submitted_form" in locals() and submitted_form:
                 img_io = io.BytesIO(img_bytes)
                 
                 excel_cell_img = OpenpyxlImage(img_io)
-                excel_cell_img.width = 85  # 設定照片縮圖寬度
-                excel_cell_img.height = 85 # 設定照片縮圖高度
+                excel_cell_img.width = 75
+                excel_cell_img.height = 75
                 
-                # 指定貼入 E 欄對應的列
                 cell_coordinate = f"E{current_row}"
                 ws.add_image(excel_cell_img, cell_coordinate)
             except:
-                ws.cell(row=current_row, column=5).value = "圖片載入失敗"
-                ws.cell(row=current_row, column=5).alignment = align_center
+                ws.cell(row=current_row, column=5, value="載入失敗").alignment = align_center
         else:
-            ws.cell(row=current_row, column=5).value = "無照片"
-            ws.cell(row=current_row, column=5).alignment = align_center
+            ws.cell(row=current_row, column=5, value="無照片").alignment = align_center
 
     excel_io = io.BytesIO()
     wb.save(excel_io)
     excel_io.seek(0)
 
-    st.success("🎉 資料已永久儲存，並成功產出包含平面圖與現場照片的 Word 與 Excel 報告！請點擊下方按鈕下載：")
+    st.success("🎉 資料已永久儲存，並成功產出專業高質感版型的 Word 與 Excel 報告！請點擊下方按鈕下載：")
     
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
