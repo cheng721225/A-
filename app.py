@@ -19,24 +19,14 @@ st.markdown(
     " **3. 於下方表格填寫細節並上傳照片** ➔ **4. 一鍵匯出 Word 報告**"
 )
 
-if "markers" not in st.session_state:
-  st.session_state.markers = []
-if "defect_details" not in st.session_state:
-  st.session_state.defect_details = {}
-if "current_unit" not in st.session_state:
-  st.session_state.current_unit = "A1戶別"
+# 初始化全域總資料庫：以「戶別_樓層」作為 Key 來獨立儲存各個區塊的 markers 與 defect_details
+if "project_data" not in st.session_state:
+  st.session_state.project_data = {}
 
 st.sidebar.header("📌 1. 查驗位置設定")
 unit_choice = st.sidebar.selectbox(
     "選擇戶別", ["A1戶別", "A2戶別", "A3戶別", "B1戶別", "B2戶別", "B3戶別"]
 )
-
-# 如果切換了戶別，自動清空舊標註
-if unit_choice != st.session_state.current_unit:
-  st.session_state.current_unit = unit_choice
-  st.session_state.markers = []
-  st.session_state.defect_details = {}
-  st.rerun()
 
 floor_choice = st.sidebar.selectbox(
     "選擇樓層",
@@ -58,6 +48,16 @@ floor_choice = st.sidebar.selectbox(
     ],
 )
 
+# 組合成當前唯一的空間識別 Key (例如：A1戶別_3F)
+current_key = f"{unit_choice}_{floor_choice}"
+
+# 如果這個空間還沒有在資料庫建立過，初始化它的結構
+if current_key not in st.session_state.project_data:
+  st.session_state.project_data[current_key] = {
+      "markers": [],
+      "defect_details": {},
+  }
+
 project_info = {
     "project_name": st.sidebar.text_input(
         "工程名稱", value="弘峻草福段A區新建工程"
@@ -68,9 +68,11 @@ project_info = {
 }
 
 st.sidebar.divider()
-if st.sidebar.button("🗑️ 清除所有標註與表格"):
-  st.session_state.markers = []
-  st.session_state.defect_details = {}
+if st.sidebar.button("🗑️ 清除目前【" + current_key + "】的所有標註與表格"):
+  st.session_state.project_data[current_key] = {
+      "markers": [],
+      "defect_details": {},
+  }
   st.rerun()
 
 st.subheader(f"🗺️ 2. 平面圖互動標註區 ({project_info['location']})")
@@ -91,8 +93,12 @@ if os.path.exists(plan_filename):
   draw_img = base_img.copy()
   draw = ImageDraw.Draw(draw_img)
 
+  # 取得當前戶別與樓層專屬的 markers
+  current_markers = st.session_state.project_data[current_key]["markers"]
+  current_details = st.session_state.project_data[current_key]["defect_details"]
+
   # 在圖上繪製已存在的標註紅點與編號
-  for m in st.session_state.markers:
+  for m in current_markers:
     mx, my = m["x"], m["y"]
     r = 12
     draw.ellipse(
@@ -102,24 +108,20 @@ if os.path.exists(plan_filename):
 
   # 顯示互動地圖並接收點擊座標
   coord = streamlit_image_coordinates(
-      draw_img, key=f"map_{unit_choice}_{floor_choice}"
+      draw_img, key=f"map_{current_key}"
   )
 
   if coord is not None:
     click_x, click_y = coord["x"], coord["y"]
-    last_marker = (
-        st.session_state.markers[-1] if st.session_state.markers else None
-    )
+    last_marker = current_markers[-1] if current_markers else None
     if (
         last_marker is None
         or last_marker["x"] != click_x
         or last_marker["y"] != click_y
     ):
-      next_id = max([m["id"] for m in st.session_state.markers], default=0) + 1
-      st.session_state.markers.append(
-          {"id": next_id, "x": click_x, "y": click_y}
-      )
-      st.session_state.defect_details[next_id] = {
+      next_id = max([m["id"] for m in current_markers], default=0) + 1
+      current_markers.append({"id": next_id, "x": click_x, "y": click_y})
+      current_details[next_id] = {
           "space": "牆面",
           "space_custom": "",
           "content": "",
@@ -134,18 +136,20 @@ if os.path.exists(plan_filename):
   st.markdown("---")
   c_ctrl1, c_ctrl2 = st.columns([2, 2])
   with c_ctrl1:
-    st.markdown(f"**📍 目前已建立缺失數：** `{len(st.session_state.markers)}` 處")
+    st.markdown(
+        f"**📍 目前【{current_key}】已建立缺失數：** `{len(current_markers)}` 處"
+    )
   with c_ctrl2:
-    if st.session_state.markers:
+    if current_markers:
       del_target = st.selectbox(
-          "選擇要刪除的編號", [m["id"] for m in st.session_state.markers]
+          "選擇要刪除的編號", [m["id"] for m in current_markers], key=f"del_{current_key}"
       )
       if st.button("🗑️ 刪除選定編號", type="secondary"):
-        st.session_state.markers = [
-            x for x in st.session_state.markers if x["id"] != del_target
+        st.session_state.project_data[current_key]["markers"] = [
+            x for x in current_markers if x["id"] != del_target
         ]
-        if del_target in st.session_state.defect_details:
-          del st.session_state.defect_details[del_target]
+        if del_target in current_details:
+          del current_details[del_target]
         st.rerun()
 
 else:
@@ -156,16 +160,19 @@ else:
 
 st.divider()
 
-st.subheader("📋 3. 缺失查驗明細填報表 (與上方地圖點擊連動)")
+st.subheader(f"📋 3. 缺失查驗明細填報表 ({project_info['location']})")
 
-if not st.session_state.markers:
-  st.info("👈 請直接點擊上方平面圖的任意位置，即可自動長出填報欄位！")
+current_markers = st.session_state.project_data[current_key]["markers"]
+current_details = st.session_state.project_data[current_key]["defect_details"]
+
+if not current_markers:
+  st.info(f"👈 目前【{current_key}】尚無缺失，請直接點擊上方平面圖新增！")
 else:
-  with st.form("defect_table_form"):
-    for m in st.session_state.markers:
+  with st.form(f"defect_table_form_{current_key}"):
+    for m in current_markers:
       m_id = m["id"]
-      if m_id not in st.session_state.defect_details:
-        st.session_state.defect_details[m_id] = {
+      if m_id not in current_details:
+        current_details[m_id] = {
             "space": "牆面",
             "space_custom": "",
             "content": "",
@@ -175,7 +182,7 @@ else:
             "remark": "",
         }
 
-      detail = st.session_state.defect_details[m_id]
+      detail = current_details[m_id]
 
       st.markdown(f"#### 🔍 缺失編號：【 #{m_id} 】")
       c1, c2, c3 = st.columns(3)
@@ -200,13 +207,13 @@ else:
             f"缺失位置 #{m_id}",
             space_options,
             index=space_options.index(curr_space),
-            key=f"space_{m_id}",
+            key=f"space_{current_key}_{m_id}",
         )
         if space_sel == "自訂":
           detail["space_custom"] = st.text_input(
               f"手動輸入位置 #{m_id}",
               value=detail.get("space_custom", ""),
-              key=f"space_c_{m_id}",
+              key=f"space_c_{current_key}_{m_id}",
           )
           detail["space"] = detail["space_custom"]
         else:
@@ -233,13 +240,13 @@ else:
             f"缺失廠商 #{m_id}",
             vendor_options,
             index=vendor_options.index(curr_vendor),
-            key=f"vendor_{m_id}",
+            key=f"vendor_{current_key}_{m_id}",
         )
         if vendor_sel == "自訂":
           detail["vendor_custom"] = st.text_input(
               f"手動輸入廠商 #{m_id}",
               value=detail.get("vendor_custom", ""),
-              key=f"vendor_c_{m_id}",
+              key=f"vendor_c_{current_key}_{m_id}",
           )
           detail["vendor"] = detail["vendor_custom"]
         else:
@@ -249,25 +256,27 @@ else:
         detail["photo"] = st.file_uploader(
             f"缺失照片 #{m_id} (支援手機拍照)",
             type=["jpg", "jpeg", "png"],
-            key=f"photo_{m_id}",
+            key=f"photo_{current_key}_{m_id}",
         )
 
       detail["content"] = st.text_input(
           f"缺失內容描述 #{m_id}",
           value=detail["content"],
-          key=f"content_{m_id}",
+          key=f"content_{current_key}_{m_id}",
           placeholder="例如：乳膠漆有明顯刷痕",
       )
       detail["remark"] = st.text_input(
           f"備註 #{m_id}",
           value=detail["remark"],
-          key=f"remark_{m_id}",
+          key=f"remark_{current_key}_{m_id}",
           placeholder="例如：需全面砂紙磨平重漆",
       )
       st.markdown("---")
 
     submitted_form = st.form_submit_button(
-        "🚀 確認填報內容並產出 Word 報告", type="primary", use_container_width=True
+        f"🚀 確認填報內容並產出【{project_info['location']}】Word 報告",
+        type="primary",
+        use_container_width=True,
     )
 
 if "submitted_form" in locals() and submitted_form:
@@ -319,7 +328,6 @@ if "submitted_form" in locals() and submitted_form:
     doc.add_picture(img_byte_arr, width=Inches(5.0))
     doc.add_paragraph()
 
-  # 修改二：將照片欄位整合進表格中（編號、缺失位置、缺失內容、缺失廠商、現場照片、備註）
   doc.add_paragraph("二、 缺失查驗明細表").runs[0].bold = True
   table = doc.add_table(rows=1, cols=6)
   table.alignment = WD_TABLE_ALIGNMENT.CENTER
@@ -330,9 +338,9 @@ if "submitted_form" in locals() and submitted_form:
     hdr_cells[i].text = header_text
     hdr_cells[i].paragraphs[0].runs[0].bold = True
 
-  for m in st.session_state.markers:
+  for m in current_markers:
     m_id = m["id"]
-    detail = st.session_state.defect_details.get(m_id, {})
+    detail = current_details.get(m_id, {})
     row_cells = table.add_row().cells
 
     row_cells[0].text = f"#{m_id}"
@@ -340,13 +348,11 @@ if "submitted_form" in locals() and submitted_form:
     row_cells[2].text = detail.get("content", "")
     row_cells[3].text = detail.get("vendor", "")
 
-    # 第 4 格放入現場照片（如果在填報時有上傳照片的話）
     photo_file = detail.get("photo")
     if photo_file is not None:
       photo_para = row_cells[4].paragraphs[0]
       photo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
       run = photo_para.add_run()
-      # 將照片插入表格儲存格中，寬度設為 1.2 英吋（約 3 公分，方便表格內對齊）
       run.add_picture(io.BytesIO(photo_file.read()), width=Inches(1.2))
       row_cells[4].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
     else:
@@ -360,7 +366,7 @@ if "submitted_form" in locals() and submitted_form:
 
   st.success("🎉 Word 報告已成功產出！請點擊下方按鈕直接下載檔案：")
   st.download_button(
-      label="📥 下載室內缺失查驗紀錄表 (.docx)",
+      label=f"📥 下載 {project_info['location']} 缺失查驗紀錄表 (.docx)",
       data=output_io,
       file_name=f"室內缺失查驗紀錄_{project_info['location'].replace(' ', '_')}_{datetime.today().strftime('%Y%m%d')}.docx",
       mime=(
