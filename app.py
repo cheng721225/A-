@@ -2,7 +2,7 @@ import io
 import os
 from datetime import datetime
 from docx import Document
-from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
 from PIL import Image, ImageDraw
@@ -213,7 +213,6 @@ else:
           detail["space"] = space_sel
 
       with c2:
-        # 已在選單中新增「防水」項目
         vendor_options = [
             "水電",
             "泥作",
@@ -320,11 +319,12 @@ if "submitted_form" in locals() and submitted_form:
     doc.add_picture(img_byte_arr, width=Inches(5.0))
     doc.add_paragraph()
 
+  # 修改二：將照片欄位整合進表格中（編號、缺失位置、缺失內容、缺失廠商、現場照片、備註）
   doc.add_paragraph("二、 缺失查驗明細表").runs[0].bold = True
-  table = doc.add_table(rows=1, cols=5)
+  table = doc.add_table(rows=1, cols=6)
   table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-  headers = ["編號", "缺失位置", "缺失內容", "缺失廠商", "備註"]
+  headers = ["編號", "缺失位置", "缺失內容", "缺失廠商", "現場照片", "備註"]
   hdr_cells = table.rows[0].cells
   for i, header_text in enumerate(headers):
     hdr_cells[i].text = header_text
@@ -334,34 +334,31 @@ if "submitted_form" in locals() and submitted_form:
     m_id = m["id"]
     detail = st.session_state.defect_details.get(m_id, {})
     row_cells = table.add_row().cells
+
     row_cells[0].text = f"#{m_id}"
     row_cells[1].text = detail.get("space", "")
     row_cells[2].text = detail.get("content", "")
     row_cells[3].text = detail.get("vendor", "")
-    row_cells[4].text = detail.get("remark", "")
 
-  doc.add_paragraph()
-  doc.add_paragraph("三、 現場缺失照片紀錄").runs[0].bold = True
-
-  for m in st.session_state.markers:
-    m_id = m["id"]
-    detail = st.session_state.defect_details.get(m_id, {})
+    # 第 4 格放入現場照片（如果在填報時有上傳照片的話）
     photo_file = detail.get("photo")
     if photo_file is not None:
-      doc.add_paragraph(
-          f"編號 #{m_id} 缺失照片 ({detail.get('space', '')} -"
-          f" {detail.get('vendor', '')}):"
-      )
-      doc.add_picture(io.BytesIO(photo_file.read()), width=Inches(3.0))
-      doc.add_paragraph()
+      photo_para = row_cells[4].paragraphs[0]
+      photo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+      run = photo_para.add_run()
+      # 將照片插入表格儲存格中，寬度設為 1.2 英吋（約 3 公分，方便表格內對齊）
+      run.add_picture(io.BytesIO(photo_file.read()), width=Inches(1.2))
+      row_cells[4].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+    else:
+      row_cells[4].text = "無照片"
+
+    row_cells[5].text = detail.get("remark", "")
 
   output_io = io.BytesIO()
   doc.save(output_io)
   output_io.seek(0)
 
   st.success("🎉 Word 報告已成功產出！請點擊下方按鈕直接下載檔案：")
-  
-  # 設定專屬 MIME 格式與檔名，確保手機與電腦點擊後會直接強制下載為 Word 檔
   st.download_button(
       label="📥 下載室內缺失查驗紀錄表 (.docx)",
       data=output_io,
