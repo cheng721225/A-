@@ -5,16 +5,17 @@ from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Inches, Pt
-from PIL import Image
+from PIL import Image, ImageDraw
 import streamlit as st
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 st.set_page_config(
     page_title="建築工地互動式缺失查驗系統", page_icon="🏗️", layout="wide"
 )
 
-st.title("🏗️ 建築工地室內缺失查驗系統")
+st.title("🏗️ 建築工地互動式平面圖缺失查驗系統")
 st.markdown(
-    "操作流程：**1. 選擇戶別與樓層** ➔ **2. 點擊按鈕新增缺失編號** ➔"
+    "操作流程：**1. 選擇戶別與樓層** ➔ **2. 直接點擊平面圖任意位置新增缺失編號** ➔"
     " **3. 於下方表格填寫細節並上傳照片** ➔ **4. 一鍵匯出 Word 報告**"
 )
 
@@ -30,6 +31,7 @@ unit_choice = st.sidebar.selectbox(
     "選擇戶別", ["A1戶別", "A2戶別", "A3戶別", "B1戶別", "B2戶別", "B3戶別"]
 )
 
+# 如果切換了戶別，自動清空舊標註
 if unit_choice != st.session_state.current_unit:
   st.session_state.current_unit = unit_choice
   st.session_state.markers = []
@@ -71,61 +73,93 @@ if st.sidebar.button("🗑️ 清除所有標註與表格"):
   st.session_state.defect_details = {}
   st.rerun()
 
-st.subheader(f"🗺️ 2. 平面圖檢視與新增區 ({project_info['location']})")
+st.subheader(f"🗺️ 2. 平面圖互動標註區 ({project_info['location']})")
+st.markdown(
+    "💡 **提示：直接用滑鼠點擊下方平面圖的任意位置，即可自動在該處長出紅點與編號！**"
+)
 
 plan_filename = f"{unit_choice.replace('戶別', '')}_plan.jpg"
 
-col_map, col_ctrl = st.columns([2, 1])
+if os.path.exists(plan_filename):
+  original_img = Image.open(plan_filename).convert("RGB")
+  orig_w, orig_h = original_img.size
 
-with col_map:
-  if os.path.exists(plan_filename):
-    st.image(
-        plan_filename,
-        caption=f"{unit_choice} 平面圖",
-        use_container_width=True,
+  # 強制將圖片寬高縮小為 0.5 倍（確保畫面瀏覽順暢）
+  new_w, new_h = int(orig_w * 0.5), int(orig_h * 0.5)
+  base_img = original_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+  draw_img = base_img.copy()
+  draw = ImageDraw.Draw(draw_img)
+
+  # 在圖上繪製已存在的標註紅點與編號
+  for m in st.session_state.markers:
+    mx, my = m["x"], m["y"]
+    r = 12
+    draw.ellipse(
+        [mx - r, my - r, mx + r, my + r], fill="red", outline="white", width=2
     )
-  else:
-    st.warning(
-        f"⚠️ 尚未偵測到 `{unit_choice}` 的平面圖檔案 (`{plan_filename}`)。"
+    draw.text((mx - 4, my - 7), str(m["id"]), fill="white")
+
+  # 顯示互動地圖並接收點擊座標
+  coord = streamlit_image_coordinates(
+      draw_img, key=f"map_{unit_choice}_{floor_choice}"
+  )
+
+  if coord is not None:
+    click_x, click_y = coord["x"], coord["y"]
+    last_marker = (
+        st.session_state.markers[-1] if st.session_state.markers else None
     )
-
-with col_ctrl:
-  st.markdown("### 📍 缺失編號管理")
-  if st.button("➕ 新增一個缺失編號", type="primary", use_container_width=True):
-    next_id = max([m["id"] for m in st.session_state.markers], default=0) + 1
-    st.session_state.markers.append({"id": next_id})
-    st.session_state.defect_details[next_id] = {
-        "space": "牆面",
-        "space_custom": "",
-        "content": "",
-        "vendor": "油漆",
-        "vendor_custom": "",
-        "photo": None,
-        "remark": "",
-    }
-    st.rerun()
-
-  st.markdown(f"**目前已建立缺失數：** `{len(st.session_state.markers)}` 處")
-
-  if st.session_state.markers:
-    st.markdown("---")
-    del_target = st.selectbox(
-        "選擇要刪除的編號", [m["id"] for m in st.session_state.markers]
-    )
-    if st.button("🗑️ 刪除選定編號", type="secondary"):
-      st.session_state.markers = [
-          x for x in st.session_state.markers if x["id"] != del_target
-      ]
-      if del_target in st.session_state.defect_details:
-        del st.session_state.defect_details[del_target]
+    if (
+        last_marker is None
+        or last_marker["x"] != click_x
+        or last_marker["y"] != click_y
+    ):
+      next_id = max([m["id"] for m in st.session_state.markers], default=0) + 1
+      st.session_state.markers.append(
+          {"id": next_id, "x": click_x, "y": click_y}
+      )
+      st.session_state.defect_details[next_id] = {
+          "space": "牆面",
+          "space_custom": "",
+          "content": "",
+          "vendor": "油漆",
+          "vendor_custom": "",
+          "photo": None,
+          "remark": "",
+      }
       st.rerun()
+
+  # 控制面板區塊（置於平面圖下方）
+  st.markdown("---")
+  c_ctrl1, c_ctrl2 = st.columns([2, 2])
+  with c_ctrl1:
+    st.markdown(f"**📍 目前已建立缺失數：** `{len(st.session_state.markers)}` 處")
+  with c_ctrl2:
+    if st.session_state.markers:
+      del_target = st.selectbox(
+          "選擇要刪除的編號", [m["id"] for m in st.session_state.markers]
+      )
+      if st.button("🗑️ 刪除選定編號", type="secondary"):
+        st.session_state.markers = [
+            x for x in st.session_state.markers if x["id"] != del_target
+        ]
+        if del_target in st.session_state.defect_details:
+          del st.session_state.defect_details[del_target]
+        st.rerun()
+
+else:
+  st.warning(
+      f"⚠️ 尚未偵測到 `{unit_choice}` 的平面圖檔案 (`{plan_filename}`)。"
+      f" 請確認有將對應的 JPG 檔上傳到 GitHub 專案根目錄中。"
+  )
 
 st.divider()
 
-st.subheader("📋 3. 缺失查驗明細填報表")
+st.subheader("📋 3. 缺失查驗明細填報表 (與上方地圖點擊連動)")
 
 if not st.session_state.markers:
-  st.info("👈 請點擊上方右側的「新增一個缺失編號」按鈕來建立填報欄位！")
+  st.info("👈 請直接點擊上方平面圖的任意位置，即可自動長出填報欄位！")
 else:
   with st.form("defect_table_form"):
     for m in st.session_state.markers:
@@ -276,9 +310,12 @@ if "submitted_form" in locals() and submitted_form:
 
   if os.path.exists(plan_filename):
     doc.add_paragraph(
-        f"一、 戶別平面圖 ({project_info['location']})"
+        f"一、 戶別平面圖與標註位置 ({project_info['location']})"
     ).runs[0].bold = True
-    doc.add_picture(plan_filename, width=Inches(5.0))
+    img_byte_arr = io.BytesIO()
+    draw_img.save(img_byte_arr, format="JPEG")
+    img_byte_arr.seek(0)
+    doc.add_picture(img_byte_arr, width=Inches(5.0))
     doc.add_paragraph()
 
   doc.add_paragraph("二、 缺失查驗明細表").runs[0].bold = True
