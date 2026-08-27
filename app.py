@@ -10,6 +10,8 @@ from docx.shared import Inches, Pt
 from PIL import Image, ImageDraw
 import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 # 定義資料庫檔案名稱
 DB_FILE = "defect_database.json"
@@ -36,7 +38,7 @@ st.set_page_config(
 st.title("🏗️ 建築工地互動式平面圖缺失查驗系統")
 st.markdown(
     "操作流程：**1. 選擇戶別與樓層** ➔ **2. 直接點擊平面圖任意位置新增缺失編號** ➔"
-    " **3. 於下方表格填寫細節並上傳照片** ➔ **4. 一鍵儲存並匯出 Word 報告**"
+    " **3. 於下方表格填寫細節並上傳照片** ➔ **4. 一鍵儲存並匯出 Word / Excel 報告**"
 )
 
 # 系統啟動時，自動從本地 JSON 檔案把歷史資料撈出來
@@ -80,7 +82,7 @@ if st.sidebar.button("🗑️ 清除目前【" + current_key + "】的所有資�
         "markers": [],
         "defect_details": {},
     }
-    save_db(st.session_state.project_data) # 永久刪除並寫入資料庫
+    save_db(st.session_state.project_data)
     st.rerun()
 
 st.subheader(f"🗺️ 2. 平面圖互動標註區 ({project_info['location']})")
@@ -92,25 +94,22 @@ if os.path.exists(plan_filename):
     original_img = Image.open(plan_filename).convert("RGB")
     orig_w, orig_h = original_img.size
 
-    # 強制將圖片寬高縮小為 0.5 倍（確保畫面瀏覽順暢）
+    # 強制將圖片寬高縮小為 0.5 倍
     new_w, new_h = int(orig_w * 0.5), int(orig_h * 0.5)
     base_img = original_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
     draw_img = base_img.copy()
     draw = ImageDraw.Draw(draw_img)
 
-    # 取得當前戶別與樓層專屬的資料庫紀錄
     current_markers = st.session_state.project_data[current_key]["markers"]
     current_details = st.session_state.project_data[current_key]["defect_details"]
 
-    # 在圖上繪製已存在的標註紅點與編號
     for m in current_markers:
         mx, my = m["x"], m["y"]
         r = 12
         draw.ellipse([mx - r, my - r, mx + r, my + r], fill="red", outline="white", width=2)
         draw.text((mx - 4, my - 7), str(m["id"]), fill="white")
 
-    # 顯示互動地圖並接收點擊座標
     coord = streamlit_image_coordinates(draw_img, key=f"map_{current_key}")
 
     if coord is not None:
@@ -119,20 +118,18 @@ if os.path.exists(plan_filename):
         if last_marker is None or last_marker["x"] != click_x or last_marker["y"] != click_y:
             next_id = max([m["id"] for m in current_markers], default=0) + 1
             current_markers.append({"id": next_id, "x": click_x, "y": click_y})
-            # JSON 的 key 必須是字串
             current_details[str(next_id)] = {
                 "space": "牆面",
                 "space_custom": "",
                 "content": "",
                 "vendor": "油漆",
                 "vendor_custom": "",
-                "photo_b64": "",  # 改用 Base64 儲存照片
+                "photo_b64": "",
                 "remark": "",
             }
-            save_db(st.session_state.project_data) # 點擊後立刻儲存到資料庫
+            save_db(st.session_state.project_data)
             st.rerun()
 
-    # 控制面板區塊（置於平面圖下方）
     st.markdown("---")
     c_ctrl1, c_ctrl2 = st.columns([2, 2])
     with c_ctrl1:
@@ -148,14 +145,11 @@ if os.path.exists(plan_filename):
                 ]
                 if str(del_target) in current_details:
                     del current_details[str(del_target)]
-                save_db(st.session_state.project_data) # 刪除後更新資料庫
+                save_db(st.session_state.project_data)
                 st.rerun()
 
 else:
-    st.warning(
-        f"⚠️ 尚未偵測到 `{unit_choice}` 的平面圖檔案 (`{plan_filename}`)。"
-        f" 請確認有將對應的 JPG 檔上傳到 GitHub 專案根目錄中。"
-    )
+    st.warning(f"⚠️ 尚未偵測到 `{unit_choice}` 的平面圖檔案 (`{plan_filename}`)。")
 
 st.divider()
 
@@ -204,7 +198,6 @@ else:
             with c3:
                 photo_file = st.file_uploader(f"新增/更換照片 #{m_id}", type=["jpg", "jpeg", "png"], key=f"photo_{current_key}_{m_id}")
                 if photo_file is not None:
-                    # 自動壓縮圖片，避免資料庫與 Word 檔案過度肥大崩潰
                     try:
                         img_upload = Image.open(photo_file)
                         img_upload.thumbnail((800, 800))
@@ -214,7 +207,6 @@ else:
                     except Exception as e:
                         st.error(f"照片處理失敗: {e}")
                 
-                # 若資料庫已有照片，顯示提示
                 if detail.get("photo_b64"):
                     st.success("✅ 已儲存照片 (上傳新檔可覆蓋)")
 
@@ -222,9 +214,8 @@ else:
             detail["remark"] = st.text_input(f"備註 #{m_id}", value=detail["remark"], key=f"remark_{current_key}_{m_id}")
             st.markdown("---")
 
-        # 這裡不只是產出 Word，同時會把所有表格填寫的文字存進資料庫
         submitted_form = st.form_submit_button(
-            f"🚀 永久儲存資料並產出【{project_info['location']}】Word 報告",
+            f"🚀 永久儲存並同時產出 Word / Excel 報告",
             type="primary",
             use_container_width=True,
         )
@@ -288,13 +279,11 @@ if "submitted_form" in locals() and submitted_form:
         row_cells[2].text = detail.get("content", "")
         row_cells[3].text = detail.get("vendor", "")
 
-        # 讀取資料庫中的照片並放入表格
         photo_b64 = detail.get("photo_b64")
         if photo_b64:
             photo_para = row_cells[4].paragraphs[0]
             photo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             run = photo_para.add_run()
-            # 解碼 Base64 並塞入 Word 中，保持寬度約 3 公分排版整齊
             img_bytes = base64.b64decode(photo_b64)
             run.add_picture(io.BytesIO(img_bytes), width=Inches(1.2))
             row_cells[4].vertical_alignment = WD_ALIGN_VERTICAL.CENTER
@@ -303,14 +292,88 @@ if "submitted_form" in locals() and submitted_form:
 
         row_cells[5].text = detail.get("remark", "")
 
-    output_io = io.BytesIO()
-    doc.save(output_io)
-    output_io.seek(0)
+    word_io = io.BytesIO()
+    doc.save(word_io)
+    word_io.seek(0)
 
-    st.success("🎉 資料已永久儲存並成功產出報告！請點擊下方按鈕下載：")
-    st.download_button(
-        label=f"📥 下載 {project_info['location']} 缺失查驗紀錄表 (.docx)",
-        data=output_io,
-        file_name=f"室內缺失查驗紀錄_{project_info['location'].replace(' ', '_')}_{datetime.today().strftime('%Y%m%d')}.docx",
-        mime=("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    # 3. 開始生成 Excel 報告 (格式與明細表對應)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "缺失查驗明細表"
+
+    # 設定標題資訊
+    ws.append([f"【{project_info['project_name']}】室內缺失查驗紀錄表"])
+    ws.append([f"施作位置: {project_info['location']}", "", f"查驗日期: {datetime.today().strftime('%Y年%m月%d日')}", f"查驗人員 / 主管: {project_info['inspector']} / {project_info['supervisor']}"])
+    ws.append([]) # 空一行
+
+    # Excel 表格標題
+    excel_headers = ["編號", "缺失位置", "缺失內容", "缺失廠商", "現場照片狀態", "備註"]
+    ws.append(excel_headers)
+
+    # 填入 Excel 內容
+    for m in current_markers:
+        m_id = str(m["id"])
+        detail = current_details.get(m_id, {})
+        has_photo = "有照片" if detail.get("photo_b64") else "無照片"
+        ws.append([
+            f"#{m_id}",
+            detail.get("space", ""),
+            detail.get("content", ""),
+            detail.get("vendor", ""),
+            has_photo,
+            detail.get("remark", "")
+        ])
+
+    # 設定 Excel 專業外觀樣式
+    header_fill = PatternFill(start_color="333333", end_color="333333", fill_type="solid")
+    header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+    thin_border = Border(
+        left=Side(style='thin', color='CCCCCC'),
+        right=Side(style='thin', color='CCCCCC'),
+        top=Side(style='thin', color='CCCCCC'),
+        bottom=Side(style='thin', color='CCCCCC')
     )
+    align_center = Alignment(horizontal='center', vertical='center')
+    align_left = Alignment(horizontal='left', vertical='center')
+
+    # 套用樣式到表頭列 (第四列)
+    for col_num in range(1, 7):
+        cell = ws.cell(row=4, column=col_num)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = align_center
+        cell.border = thin_border
+
+    # 套用樣式到資料列
+    for row_num in range(5, 5 + len(current_markers)):
+        for col_num in range(1, 7):
+            cell = ws.cell(row=row_num, column=col_num)
+            cell.border = thin_border
+            if col_num in [1, 5]: # 編號與照片狀態置中
+                cell.alignment = align_center
+            else:
+                cell.alignment = align_left
+
+    excel_io = io.BytesIO()
+    wb.save(excel_io)
+    excel_io.seek(0)
+
+    st.success("🎉 資料已永久儲存，並成功產出 Word 與 Excel 報告！請點擊下方按鈕分別下載：")
+    
+    col_dl1, col_dl2 = st.columns(2)
+    with col_dl1:
+        st.download_button(
+            label=f"📥 下載 Word 報告 (.docx)",
+            data=word_io,
+            file_name=f"室內缺失查驗紀錄_{project_info['location'].replace(' ', '_')}_{datetime.today().strftime('%Y%m%d')}.docx",
+            mime=("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            use_container_width=True
+        )
+    with col_dl2:
+        st.download_button(
+            label=f"📊 下載 Excel 報表 (.xlsx)",
+            data=excel_io,
+            file_name=f"室內缺失查驗明細_{project_info['location'].replace(' ', '_')}_{datetime.today().strftime('%Y%m%d')}.xlsx",
+            mime=("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            use_container_width=True
+        )
