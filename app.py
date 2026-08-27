@@ -12,6 +12,7 @@ import streamlit as st
 from streamlit_image_coordinates import streamlit_image_coordinates
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.drawing.image import Image as OpenpyxlImage
 
 # 定義資料庫檔案名稱
 DB_FILE = "defect_database.json"
@@ -296,7 +297,7 @@ if "submitted_form" in locals() and submitted_form:
     doc.save(word_io)
     word_io.seek(0)
 
-    # 3. 開始生成 Excel 報告 (格式與明細表對應)
+    # 3. 開始生成 Excel 報告 (完整對應 Word 格式：包含標題、平面圖、與明細表圖片)
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "缺失查驗明細表"
@@ -306,21 +307,43 @@ if "submitted_form" in locals() and submitted_form:
     ws.append([f"施作位置: {project_info['location']}", "", f"查驗日期: {datetime.today().strftime('%Y年%m月%d日')}", f"查驗人員 / 主管: {project_info['inspector']} / {project_info['supervisor']}"])
     ws.append([]) # 空一行
 
-    # Excel 表格標題
-    excel_headers = ["編號", "缺失位置", "缺失內容", "缺失廠商", "現場照片狀態", "備註"]
-    ws.append(excel_headers)
+    # 一、 平面圖區塊標題
+    ws.append([f"一、 戶別平面圖與標註位置 ({project_info['location']})"])
+    ws.append([]) # 預留給平面圖的空白行
 
-    # 填入 Excel 內容
+    # 將帶有紅點的平面圖直接貼進 Excel 中
+    if os.path.exists(plan_filename):
+        plan_img_io = io.BytesIO()
+        draw_img.save(plan_img_io, format="JPEG")
+        plan_img_io.seek(0)
+        
+        excel_plan_img = OpenpyxlImage(plan_img_io)
+        excel_plan_img.width = 350  # 調整 Excel 中的平面圖寬度
+        excel_plan_img.height = int(350 * (draw_img.height / draw_img.width))
+        ws.add_image(excel_plan_img, "A6") # 放置在 A6 儲存格
+
+    # 往下推幾行以容納平面圖空間
+    for _ in range(15):
+        ws.append([])
+
+    # 二、 缺失查驗明細表標題
+    ws.append(["二、 缺失查驗明細表"])
+    
+    excel_headers = ["編號", "缺失位置", "缺失內容", "缺失廠商", "現場照片", "備註"]
+    ws.append(excel_headers)
+    
+    table_header_row_idx = ws.max_row
+
+    # 填入 Excel 明細內容
     for m in current_markers:
         m_id = str(m["id"])
         detail = current_details.get(m_id, {})
-        has_photo = "有照片" if detail.get("photo_b64") else "無照片"
         ws.append([
             f"#{m_id}",
             detail.get("space", ""),
             detail.get("content", ""),
             detail.get("vendor", ""),
-            has_photo,
+            "", # 照片欄位留白，後續用圖片覆蓋
             detail.get("remark", "")
         ])
 
@@ -328,37 +351,64 @@ if "submitted_form" in locals() and submitted_form:
     header_fill = PatternFill(start_color="333333", end_color="333333", fill_type="solid")
     header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
     thin_border = Border(
-        left=Side(style='thin', color='CCCCCC'),
-        right=Side(style='thin', color='CCCCCC'),
-        top=Side(style='thin', color='CCCCCC'),
-        bottom=Side(style='thin', color='CCCCCC')
+        left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
+        top=Side(style='thin', color='CCCCCC'), bottom=Side(style='thin', color='CCCCCC')
     )
     align_center = Alignment(horizontal='center', vertical='center')
     align_left = Alignment(horizontal='left', vertical='center')
 
-    # 套用樣式到表頭列 (第四列)
+    # 套用樣式到明細表頭
     for col_num in range(1, 7):
-        cell = ws.cell(row=4, column=col_num)
+        cell = ws.cell(row=table_header_row_idx, column=col_num)
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = align_center
         cell.border = thin_border
 
-    # 套用樣式到資料列
-    for row_num in range(5, 5 + len(current_markers)):
+    # 設定欄寬與行高，並將現場照片實際貼入儲存格
+    ws.column_dimensions['E'].width = 18 # 現場照片欄位拉寬
+    start_row_for_details = table_header_row_idx + 1
+
+    for idx, m in enumerate(current_markers):
+        current_row = start_row_for_details + idx
+        ws.row_dimensions[current_row].height = 70 # 拉高行高以容納圖片
+
         for col_num in range(1, 7):
-            cell = ws.cell(row=row_num, column=col_num)
+            cell = ws.cell(row=current_row, column=col_num)
             cell.border = thin_border
-            if col_num in [1, 5]: # 編號與照片狀態置中
+            if col_num in [1]: 
                 cell.alignment = align_center
             else:
                 cell.alignment = align_left
+
+        # 將該筆缺失的照片縮圖貼入 E 欄 (第 5 欄)
+        m_id = str(m["id"])
+        detail = current_details.get(m_id, {})
+        photo_b64 = detail.get("photo_b64")
+        if photo_b64:
+            try:
+                img_bytes = base64.b64decode(photo_b64)
+                img_io = io.BytesIO(img_bytes)
+                
+                excel_cell_img = OpenpyxlImage(img_io)
+                excel_cell_img.width = 85  # 設定照片縮圖寬度
+                excel_cell_img.height = 85 # 設定照片縮圖高度
+                
+                # 指定貼入 E 欄對應的列
+                cell_coordinate = f"E{current_row}"
+                ws.add_image(excel_cell_img, cell_coordinate)
+            except:
+                ws.cell(row=current_row, column=5).value = "圖片載入失敗"
+                ws.cell(row=current_row, column=5).alignment = align_center
+        else:
+            ws.cell(row=current_row, column=5).value = "無照片"
+            ws.cell(row=current_row, column=5).alignment = align_center
 
     excel_io = io.BytesIO()
     wb.save(excel_io)
     excel_io.seek(0)
 
-    st.success("🎉 資料已永久儲存，並成功產出 Word 與 Excel 報告！請點擊下方按鈕分別下載：")
+    st.success("🎉 資料已永久儲存，並成功產出包含平面圖與現場照片的 Word 與 Excel 報告！請點擊下方按鈕下載：")
     
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
