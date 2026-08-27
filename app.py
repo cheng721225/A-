@@ -213,11 +213,13 @@ else:
           detail["space"] = space_sel
 
       with c2:
+        # 已在選單中新增「防水」項目
         vendor_options = [
             "水電",
             "泥作",
             "磁磚",
             "油漆",
+            "防水",
             "點工",
             "衛浴",
             "廚具",
@@ -357,7 +359,9 @@ if "submitted_form" in locals() and submitted_form:
   doc.save(output_io)
   output_io.seek(0)
 
-  st.success("🎉 Word 報告已成功產出！請點擊下方按鈕下載：")
+  st.success("🎉 Word 報告已成功產出！請點擊下方按鈕直接下載檔案：")
+  
+  # 設定專屬 MIME 格式與檔名，確保手機與電腦點擊後會直接強制下載為 Word 檔
   st.download_button(
       label="📥 下載室內缺失查驗紀錄表 (.docx)",
       data=output_io,
