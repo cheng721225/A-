@@ -2,3 +2,4 @@ streamlit
 streamlit-image-coordinates
 python-docx
 pillow
+openpyxl
